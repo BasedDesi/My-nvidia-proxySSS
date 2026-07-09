@@ -86,21 +86,21 @@ async def chat_completions(request: ChatRequest):
         if request.presence_penalty != 0.0:
             params["presence_penalty"] = request.presence_penalty
         
-        # 🔥 ВКЛЮЧАЕМ REASONING ДЛЯ GLM-5.2
+        # 🔥 МАКСИМАЛЬНЫЙ REASONING ДЛЯ GLM-5.2
         if "glm-5.2" in request.model.lower():
-            print("🧠 Активация reasoning для GLM-5.2")
+            print("🧠 Активация МАКСИМАЛЬНОГО reasoning для GLM-5.2")
             params["extra_body"] = {
                 "chat_template_kwargs": {
                     "enable_thinking": True
-                }
+                },
+                "reasoning_effort": "max"  # Максимальная глубина мышления
             }
         
         print("🔄 Отправка запроса в NVIDIA...")
         completion = client.chat.completions.create(**params)
         print("✅ Ответ от NVIDIA получен")
         
-        # 🔍 БЕЗОПАСНОЕ ИЗВЛЕЧЕНИЕ ДАННЫХ
-        # Проверяем структуру ответа
+        # Безопасное извлечение данных
         if not hasattr(completion, 'choices') or not completion.choices:
             print("❌ Нет поля choices в ответе")
             raise ValueError("Invalid response format: missing choices")
