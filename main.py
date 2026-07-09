@@ -1,13 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from openai import OpenAI
 import os
-import uvicorn
 
 app = FastAPI()
 
-# Разрешаем CORS для JanitorAI
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,13 +15,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Инициализация клиента NVIDIA
+# NVIDIA Client
 client = OpenAI(
     base_url="https://integrate.api.nvidia.com/v1",
-    api_key=os.getenv("NVIDIA_API_KEY")  # Берем ключ из переменных окружения
+    api_key=os.getenv("NVIDIA_API_KEY")
 )
 
-# Модель для запроса от JanitorAI
 class ChatRequest(BaseModel):
     model: str
     messages: list
@@ -32,7 +31,6 @@ class ChatRequest(BaseModel):
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatRequest):
     try:
-        # Преобразуем запрос JanitorAI в запрос к NVIDIA
         completion = client.chat.completions.create(
             model=request.model,
             messages=request.messages,
@@ -41,14 +39,15 @@ async def chat_completions(request: ChatRequest):
             stream=request.stream
         )
         
-        # Если стриминг - возвращаем поток
         if request.stream:
             return StreamingResponse(stream_generator(completion), media_type="text/event-stream")
         
-        # Если не стриминг - возвращаем JSON
         return {
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
             "choices": [{
                 "message": {
+                    "role": "assistant",
                     "content": completion.choices[0].message.content
                 }
             }]
@@ -56,11 +55,13 @@ async def chat_completions(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-async def stream_generator(completion):
+def stream_generator(completion):
     for chunk in completion:
         if chunk.choices and chunk.choices[0].delta.content:
-            yield f"data: {chunk.choices[0].delta.content}\n\n"
+            yield f"data: {{\"choices\": [{{\"delta\": {{\"content\": \"{chunk.choices[0].delta.content}\"}}}}]}}\n\n"
     yield "data: [DONE]\n\n"
 
+# Для локального запуска
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
