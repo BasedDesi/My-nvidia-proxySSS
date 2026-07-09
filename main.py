@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from openai import OpenAI
 import os
@@ -8,12 +9,14 @@ import json
 
 app = FastAPI()
 
-# Разрешаем CORS для JanitorAI
+# Настройка CORS с поддержкой всех методов
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Инициализация клиента NVIDIA
@@ -26,7 +29,7 @@ client = OpenAI(
     api_key=NVIDIA_API_KEY
 )
 
-# Модель для запроса от JanitorAI (полная совместимость)
+# Модель для запроса от JanitorAI
 class ChatRequest(BaseModel):
     model: str
     messages: list
@@ -37,10 +40,34 @@ class ChatRequest(BaseModel):
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
 
+@app.options("/v1/chat/completions")
+async def options_chat():
+    """Обработка предварительного CORS-запроса"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
+@app.options("/{path:path}")
+async def options_all(path: str):
+    """Обработка любых OPTIONS-запросов"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatRequest):
     try:
-        # Подготавливаем параметры для NVIDIA
+        # Базовые параметры для NVIDIA
         params = {
             "model": request.model,
             "messages": request.messages,
@@ -49,7 +76,7 @@ async def chat_completions(request: ChatRequest):
             "stream": request.stream
         }
         
-        # Добавляем опциональные параметры, если они есть
+        # Добавляем опциональные параметры
         if request.top_p != 1.0:
             params["top_p"] = request.top_p
         if request.frequency_penalty != 0.0:
@@ -57,21 +84,26 @@ async def chat_completions(request: ChatRequest):
         if request.presence_penalty != 0.0:
             params["presence_penalty"] = request.presence_penalty
         
+        # 🔥 ВКЛЮЧАЕМ REASONING ДЛЯ GLM-5.2
+        if "glm-5.2" in request.model.lower():
+            params["extra_body"] = {
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": "max"  # max, medium, low
+            }
+        
         completion = client.chat.completions.create(**params)
         
-        # Если стриминг — возвращаем поток в формате OpenAI
+        # Обработка стриминга
         if request.stream:
-            from fastapi.responses import StreamingResponse
             def generate():
                 for chunk in completion:
                     if chunk.choices and chunk.choices[0].delta.content:
-                        # Формат OpenAI для стриминга
                         yield f"data: {json.dumps({'choices': [{'delta': {'content': chunk.choices[0].delta.content}}]})}\n\n"
                 yield "data: [DONE]\n\n"
             return StreamingResponse(generate(), media_type="text/event-stream")
         
-        # Для не-стриминга — строгий JSON в формате OpenAI
-        return {
+        # Обычный ответ
+        return JSONResponse({
             "choices": [
                 {
                     "message": {
@@ -87,13 +119,12 @@ async def chat_completions(request: ChatRequest):
                 "completion_tokens": 0,
                 "total_tokens": 0
             }
-        }
+        })
         
     except Exception as e:
-        # Возвращаем ошибку в формате, понятном JanitorAI
-        raise HTTPException(
-            status_code=500, 
-            detail={
+        return JSONResponse(
+            status_code=500,
+            content={
                 "error": {
                     "message": str(e),
                     "type": "api_error"
