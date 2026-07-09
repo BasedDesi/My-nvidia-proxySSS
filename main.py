@@ -6,6 +6,11 @@ from openai import OpenAI
 import os
 import uvicorn
 import json
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -67,6 +72,8 @@ async def options_all(path: str):
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatRequest):
     try:
+        logger.info(f"Получен запрос для модели: {request.model}")
+        
         # Базовые параметры для NVIDIA
         params = {
             "model": request.model,
@@ -86,13 +93,19 @@ async def chat_completions(request: ChatRequest):
         
         # 🔥 ВКЛЮЧАЕМ REASONING ДЛЯ GLM-5.2 (ПРОВЕРЕННЫЙ СПОСОБ)
         if "glm-5.2" in request.model.lower():
+            logger.info("🔧 Активация reasoning для GLM-5.2")
             params["extra_body"] = {
                 "chat_template_kwargs": {
                     "enable_thinking": True
                 }
             }
+            # Дополнительный параметр для некоторых версий API
+            if "reasoning_effort" in request.model.lower():
+                params["reasoning_effort"] = "max"
         
+        logger.info(f"Отправка запроса в NVIDIA: {params}")
         completion = client.chat.completions.create(**params)
+        logger.info("✅ Ответ от NVIDIA получен")
         
         # Обработка стриминга
         if request.stream:
@@ -107,6 +120,7 @@ async def chat_completions(request: ChatRequest):
                             response_data["choices"][0]["delta"]["content"] = delta.content
                         
                         if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                            logger.info("🧠 Обнаружен reasoning в стриминге")
                             response_data["choices"][0]["delta"]["reasoning_content"] = delta.reasoning_content
                         
                         yield f"data: {json.dumps(response_data)}\n\n"
@@ -134,11 +148,15 @@ async def chat_completions(request: ChatRequest):
         
         # Если есть reasoning_content, добавляем его в ответ
         if hasattr(completion.choices[0].message, 'reasoning_content'):
+            logger.info("🧠 Reasoning найден в ответе")
             response_data["choices"][0]["message"]["reasoning_content"] = completion.choices[0].message.reasoning_content
+        else:
+            logger.info("❌ Reasoning отсутствует в ответе")
         
         return JSONResponse(response_data)
         
     except Exception as e:
+        logger.error(f"❌ Ошибка: {str(e)}")
         return JSONResponse(
             status_code=500,
             content={
